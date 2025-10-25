@@ -1,0 +1,21 @@
+
+# Unified schema (every line has the same fields, comma-separated)
+# Field order:
+# Type, Address, Price, IndoorArea, OutDoorArea, Floor, Bedrooms, HasElevator, IsRented, MonthlyRent, HasGarden
+#
+# Default values when a field is not applicable:
+# - numeric (price, areas, floor, bedrooms, monthly rent)  -> 0
+# - string (address or other strings)                      -> N/A
+# - boolean (HasElevator, IsRented, HasGarden)            -> false
+#
+# Notes:
+# - Type is one of: RentableApartment, Apartment, House
+# - Do NOT use commas inside the Address (or implement quoted-CSV parsing).
+# - Use dot (.) as decimal separator.
+#
+# Examples:
+RentableApartment, 123 Main St, 1500, 850, 0, 2, 2, true, false, 1500, false
+Apartment, 789 Pine Ave, 90000, 650, 0, 3, 1, false, false, 0, false
+House, 456 Oak St, 300000, 1500, 500, 0, 0, false, false, 0, true
+# A line missing many fields (filled with defaults):
+# Apartment, N/A, 0, 0, 0, 0, 0, false, false, 0, false
