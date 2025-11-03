@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
@@ -13,16 +14,37 @@ namespace RealEstate
     {
 
         private List<Property> Properties { get; set; }
+
+        // Agency capital (sum of values of owned properties). Kept private; read via GetCapital().
+        private double Capital { get; set; }
+
+        // Agency cash/budget used for purchases, rent collection, etc.
+        private double Budget { get; set; }
        
         public RealEstateAgency()
         {
             Properties = new List<Property>();
+            Capital = 0;
+            Budget = 0;
         }
+
+        // Recalculate capital from current Properties list (use after loading file)
+        // Now returns the recalculated value so it can be used directly.
+        public double RecalculateCapital()
+        {
+            Capital = Properties.Sum(p => p.PropertyValue);
+            return Capital;
+        }
+
+        // Read-only accessors
+        public double GetCapital() => RecalculateCapital();
+        public double GetBudget() => Budget;
 
         // convenience method used by Program.cs when reloading the file
         public void RemoveAllProperties()
         {
             Properties.Clear();
+            Capital = 0;
         }
 
         public Property findPropertyByAddress(string address)
@@ -40,7 +62,45 @@ namespace RealEstate
             this.Properties.Remove(property); // poti sa stergi si din fisier linia respectiva
         }
 
+        // Purchase a property: checks budget, add to in-memory list and decrease budget and increase capital.
+        // Throws InvalidOperationException if budget is insufficient.
+        // Optional filePath: if provided the properties file will be rewritten.
+        public void PurchaseProperty(Property property, string filePath = null)
+        {
+            if (property == null) throw new ArgumentNullException(nameof(property));
+
+            if (Budget < property.PropertyValue)
+                throw new InvalidOperationException("Insufficient budget to purchase the property.");
+
+            Properties.Add(property);
+            Capital += property.PropertyValue;
+            Budget -= property.PropertyValue;
+
+            if (!string.IsNullOrWhiteSpace(filePath))
+                SavePropertiesToFile(filePath);
+        }
+
+        // Sell a property: remove from in-memory list, decrease capital and increase budget by 5% of property's value, then persist.
+        public void SellProperty(Property property, string filePath = null)
+        {
+            if (property == null) throw new ArgumentNullException(nameof(property));
+
+            if (!Properties.Remove(property))
+                return; // nothing removed
+
+            Capital -= property.PropertyValue;
+            if (Capital < 0) Capital = 0;
+
+            // Increase budget by 5% of the sold property's value
+            double gain = property.PropertyValue * 0.10;
+            Budget += gain;
+
+            if (!string.IsNullOrWhiteSpace(filePath))
+                SavePropertiesToFile(filePath);
+        }
+
         // Remove from memory and persist change to the given file by rewriting it.
+        // Kept for compatibility; it now updates the capital when removal succeeds (but does not change budget).
         public void RemovePropertyAndSave(Property property, string filePath)
         {
             if (property == null) throw new ArgumentNullException(nameof(property));
@@ -49,7 +109,54 @@ namespace RealEstate
             if (!Properties.Remove(property))
                 return; // nothing removed
 
+            // adjust capital
+            Capital -= property.PropertyValue;
+            if (Capital < 0) Capital = 0;
+
             SavePropertiesToFile(filePath);
+        }
+
+        // Collect monthly rent for all rented rentable properties, add to budget and return total collected.
+        public double CollectMonthlyRent(string filePath = null)
+        {
+            double total = 0;
+            foreach (var p in Properties)
+            {
+                if (p is RentableApartment ra && ra.IsRented)
+                {
+                    total += ra.MonthlyRent;
+                }
+            }
+
+            if (total > 0)
+                Budget += total;
+
+            if (!string.IsNullOrWhiteSpace(filePath))
+                SavePropertiesToFile(filePath);
+
+            return total;
+        }
+
+        // Collect monthly rent for a single property by address
+        public double CollectMonthlyRentFor(string address, string filePath = null)
+        {
+            var p = findPropertyByAddress(address);
+            if (p is RentableApartment ra && ra.IsRented)
+            {
+                Budget += ra.MonthlyRent;
+                if (!string.IsNullOrWhiteSpace(filePath))
+                    SavePropertiesToFile(filePath);
+                return ra.MonthlyRent;
+            }
+
+            return 0;
+        }
+
+        // Adjust budget directly (public helper). Use positive amounts to increase, negative to decrease.
+        public void AdjustBudget(double amount)
+        {
+            Budget += amount;
+            if (Budget < 0) Budget = 0;
         }
 
         // Persist the current Properties list to a txt file using the unified schema:
@@ -133,7 +240,8 @@ namespace RealEstate
             //Console.WriteLine($"[DEBUG] Saved {lines.Count} properties to: {filePath}");
         }
 
-        public void RentProperty(string address)
+        // Mark property as rented and save file if filePath provided.
+        public void RentProperty(string address, string filePath = null)
         {
             var property = Properties.FirstOrDefault(p => p.Address == address);
             if (property is null)
@@ -150,13 +258,48 @@ namespace RealEstate
                     return;
                 }
 
-            rentable.IsRented = true;
-            Console.WriteLine($"Property at {address} has been rented.");
-            return;
+                rentable.IsRented = true;
+                Console.WriteLine($"Property at {address} has been rented.");
+
+                if (!string.IsNullOrWhiteSpace(filePath))
+                    SavePropertiesToFile(filePath);
+
+                return;
             }
 
             Console.WriteLine($"Property at {address} is not rentable.");
         }
+
+        // Mark property as not rented (unrent) and save file if filePath provided.
+        public void UnrentProperty(string address, string filePath = null)
+        {
+            var property = Properties.FirstOrDefault(p => p.Address == address);
+            if (property is null)
+            {
+                Console.WriteLine($"No property found at {address}.");
+                return;
+            }
+
+            if (property is IRentable rentable)
+            {
+                if (!rentable.IsRented)
+                {
+                    Console.WriteLine($"Property at {address} is not currently rented.");
+                    return;
+                }
+
+                rentable.IsRented = false;
+                Console.WriteLine($"Property at {address} is now available (not rented).");
+
+                if (!string.IsNullOrWhiteSpace(filePath))
+                    SavePropertiesToFile(filePath);
+
+                return;
+            }
+
+            Console.WriteLine($"Property at {address} is not rentable.");
+        }
+
         public void DisplayProperties()
         {
             foreach (var property in Properties)
@@ -183,8 +326,7 @@ namespace RealEstate
                 Console.WriteLine(property.ToString());
             }
         }
-        
-
+      
         public List<Property> SortBy<TKey>(Func<Property, TKey> keySelector, bool ascending = true)
             where TKey : IComparable<TKey>
         {
@@ -238,9 +380,14 @@ namespace RealEstate
 // printari dupa sortare cu foreach(var property in Properties) - done
 // salvare inapoi in fisier dupa stergere - done
 // 1. adauga un capital al agentiei(valorea tuturor proprietatilor detinute) si mareste-l 
-// cand se cumpara o proprietate si scade-l cand se vinde o proprietate 
+// cand se cumpara o proprietate si scade-l cand se vinde o proprietate  - done
 // 2. adauga un buget care se mareste atunci cand se vinde o proprietate(+5% din valoarea ei)
-// sau cand se incaseaza the monthly rent si scade cand se cumpara o proprietate
+// sau cand se incaseaza the monthly rent si scade cand se cumpara o proprietate - done
 // 3. adauga o noua proprietate - cu introducere de date de la tastatura si salvare in fisier,
-// va verifica daca agentia are bugetul necesar pt a o cumpara
-// 4. introducere oferta de vanzare - acceptare doar daca agentia are bugetul necesar
+// va verifica daca agentia are bugetul necesar pt a o cumpara - done
+// 4. introducere oferta de vanzare - acceptare doar daca agentia are bugetul necesar - done
+// 5. colectare chirii lunare pentru toate proprietatile inchiriate - done
+// adauga submeniuri pentru cautare si sortare 
+// adauga max Value pt inputs
+// trateaza cazurile in care nu exista proprietati in agentie (ex la colectare chirii, afisare etc) 
+// bool - month map ca sa stim cand e colectata chiria
