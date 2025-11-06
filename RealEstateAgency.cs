@@ -20,12 +20,19 @@ namespace RealEstate
 
         // Agency cash/budget used for purchases, rent collection, etc.
         private double Budget { get; set; }
+
+        // Tracks whether monthly rent has been collected for each month (1 = January .. 12 = December)
+        // true = collected, false = not collected
+        private Dictionary<int, bool> RentCollectedByMonth { get; set; }
        
         public RealEstateAgency()
         {
             Properties = new List<Property>();
             Capital = 0;
             Budget = 0;
+
+            // initialize months 1..12 with false (not collected)
+            RentCollectedByMonth = Enumerable.Range(1, 12).ToDictionary(m => m, m => false);
         }
 
         // Recalculate capital from current Properties list (use after loading file)
@@ -65,7 +72,8 @@ namespace RealEstate
         // Purchase a property: checks budget, add to in-memory list and decrease budget and increase capital.
         // Throws InvalidOperationException if budget is insufficient.
         // Optional filePath: if provided the properties file will be rewritten.
-        public void PurchaseProperty(Property property, string filePath = null)
+        // filePath is nullable now to avoid passing null literal to non-nullable param.
+        public void PurchaseProperty(Property property, string? filePath = null)
         {
             if (property == null) throw new ArgumentNullException(nameof(property));
 
@@ -80,10 +88,16 @@ namespace RealEstate
                 SavePropertiesToFile(filePath);
         }
 
-        // Sell a property: remove from in-memory list, decrease capital and increase budget by 5% of property's value, then persist.
-        public void SellProperty(Property property, string filePath = null)
+        // Sell a property: remove from in-memory list, decrease capital and increase budget by 10% of property's value, then persist.
+        public void SellProperty(Property property, string? filePath = null)
         {
             if (property == null) throw new ArgumentNullException(nameof(property));
+
+            if (property is IRentable rentable && rentable.IsRented)
+            {
+                Console.WriteLine("Cannot sell a rented property.");
+                return;
+            }
 
             if (!Properties.Remove(property))
                 return; // nothing removed
@@ -91,7 +105,7 @@ namespace RealEstate
             Capital -= property.PropertyValue;
             if (Capital < 0) Capital = 0;
 
-            // Increase budget by 5% of the sold property's value
+            // Increase budget by 10% of the sold property's value
             double gain = property.PropertyValue * 0.10;
             Budget += gain;
 
@@ -105,6 +119,11 @@ namespace RealEstate
         {
             if (property == null) throw new ArgumentNullException(nameof(property));
             if (string.IsNullOrWhiteSpace(filePath)) throw new ArgumentException("File path required.", nameof(filePath));
+            if (property is IRentable rentable && rentable.IsRented)
+            {
+                Console.WriteLine("Cannot remove a rented property.");
+                return;
+            }
 
             if (!Properties.Remove(property))
                 return; // nothing removed
@@ -116,9 +135,53 @@ namespace RealEstate
             SavePropertiesToFile(filePath);
         }
 
-        // Collect monthly rent for all rented rentable properties, add to budget and return total collected.
-        public double CollectMonthlyRent(string filePath = null)
+        // ---- Rent collection month-map helpers ----
+
+        // returns true if rent has already been collected for given month (1..12)
+        public bool IsRentCollectedForMonth(int month)
         {
+            ValidateMonth(month);
+            return RentCollectedByMonth.TryGetValue(month, out var collected) && collected;
+        }
+
+        // mark a month as collected/uncollected
+        public void SetRentCollectedForMonth(int month, bool collected)
+        {
+            ValidateMonth(month);
+            RentCollectedByMonth[month] = collected;
+        }
+
+        // reset all months to not collected (use at start of new year)
+        public void ResetRentCollectionForNewYear()
+        {
+            for (int m = 1; m <= 12; m++)
+                RentCollectedByMonth[m] = false;
+        }
+
+        private static void ValidateMonth(int month)
+        {
+            if (month < 1 || month > 12)
+                throw new ArgumentOutOfRangeException(nameof(month), "Month must be between 1 and 12.");
+        }
+
+        // Collect monthly rent for all rented rentable properties, add to budget and return total collected.
+        // Overload that accepts the month number (1..12). If rent for the provided month was already collected,
+        // the method will not collect again and will return 0.
+        public double CollectMonthlyRent(int month, string? filePath = null)
+        {
+            ValidateMonth(month);
+
+            if (IsRentCollectedForMonth(month))
+            {
+                Console.WriteLine($"Rent already collected for {CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(month)}.");
+                return 0;
+            }
+
+            if (Properties.Count == 0)
+            {
+                Console.WriteLine("No properties available.");
+                return 0;
+            }
             double total = 0;
             foreach (var p in Properties)
             {
@@ -129,7 +192,10 @@ namespace RealEstate
             }
 
             if (total > 0)
+            {
                 Budget += total;
+                RentCollectedByMonth[month] = true;
+            }
 
             if (!string.IsNullOrWhiteSpace(filePath))
                 SavePropertiesToFile(filePath);
@@ -137,19 +203,42 @@ namespace RealEstate
             return total;
         }
 
-        // Collect monthly rent for a single property by address
-        public double CollectMonthlyRentFor(string address, string filePath = null)
+        // Backwards-compatible: collect for current month
+        public double CollectMonthlyRent(string? filePath = null)
         {
+            int currentMonth = DateTime.Now.Month;
+            return CollectMonthlyRent(currentMonth, filePath);
+        }
+
+        // Collect monthly rent for a single property by address
+        public double CollectMonthlyRentFor(string address, int month, string? filePath = null)
+        {
+            ValidateMonth(month);
+
+            if (IsRentCollectedForMonth(month))
+            {
+                Console.WriteLine($"Rent already collected for {CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(month)}.");
+                return 0;
+            }
+
             var p = findPropertyByAddress(address);
-            if (p is RentableApartment ra && ra.IsRented)
+            if (p != null && p is RentableApartment ra && ra.IsRented)
             {
                 Budget += ra.MonthlyRent;
+                RentCollectedByMonth[month] = true;
                 if (!string.IsNullOrWhiteSpace(filePath))
                     SavePropertiesToFile(filePath);
                 return ra.MonthlyRent;
             }
 
             return 0;
+        }
+
+        // Backwards-compatible: collect for current month for single property
+        public double CollectMonthlyRentFor(string address, string? filePath = null)
+        {
+            int currentMonth = DateTime.Now.Month;
+            return CollectMonthlyRentFor(address, currentMonth, filePath);
         }
 
         // Adjust budget directly (public helper). Use positive amounts to increase, negative to decrease.
@@ -241,7 +330,7 @@ namespace RealEstate
         }
 
         // Mark property as rented and save file if filePath provided.
-        public void RentProperty(string address, string filePath = null)
+        public void RentProperty(string address, string? filePath = null)
         {
             var property = Properties.FirstOrDefault(p => p.Address == address);
             if (property is null)
@@ -271,7 +360,7 @@ namespace RealEstate
         }
 
         // Mark property as not rented (unrent) and save file if filePath provided.
-        public void UnrentProperty(string address, string filePath = null)
+        public void UnrentProperty(string address, string? filePath = null)
         {
             var property = Properties.FirstOrDefault(p => p.Address == address);
             if (property is null)
@@ -302,6 +391,11 @@ namespace RealEstate
 
         public void DisplayProperties()
         {
+            if (Properties.Count == 0)
+            {
+                Console.WriteLine("No properties available.");
+                return;
+            }
             foreach (var property in Properties)
             {
                 Console.WriteLine(property.ToString());
@@ -387,7 +481,7 @@ namespace RealEstate
 // va verifica daca agentia are bugetul necesar pt a o cumpara - done
 // 4. introducere oferta de vanzare - acceptare doar daca agentia are bugetul necesar - done
 // 5. colectare chirii lunare pentru toate proprietatile inchiriate - done
-// adauga submeniuri pentru cautare si sortare 
-// adauga max Value pt inputs
-// trateaza cazurile in care nu exista proprietati in agentie (ex la colectare chirii, afisare etc) 
+// adauga submeniuri pentru cautare si sortare - done
+// adauga max Value pt inputs - done
+// trateaza cazurile in care nu exista proprietati in agentie (ex la colectare chirii, afisare etc) - done
 // bool - month map ca sa stim cand e colectata chiria
